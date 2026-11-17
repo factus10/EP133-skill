@@ -64,7 +64,19 @@ Patterns recorded on the device hold note lengths of 12-26 ticks at bytes 5-6. T
 
 Events are sorted by time.
 
-Some records in device-written patterns have a row byte that is not a multiple of 8. These look like automation records, not notes. Readers should skip them, and writers should not produce them. Byte 7 has also been seen non-zero on device-written notes; its meaning is unknown.
+Byte 7 of a note: the device writes 0, 6, 8, 31 or 255; 255 floods MIDI output. Always write 0.
+
+### Fader automation records
+Records whose row byte is below 8 (not a pad multiple) are fader automation, per [kmorrill/ep-series-sysex](https://github.com/kmorrill/ep-series-sysex) (round-trip verified):
+```
+Bytes 0-1: Time in ticks (uint16LE); the device records one every 6 ticks while a fader moves
+Byte 2:    Record type 0x01 (0x05 also accepted)
+Byte 3:    Fader parameter index (see Settings)
+Byte 4:    0x00
+Bytes 5-6: Value, uint16LE 0-32767 (larger values give `err fader 93`)
+Byte 7:    0x00
+```
+A value holds until the next record and overrides the group's fader setting. Header byte 2 counts notes and automation records together. Readers that only want notes should skip these.
 
 ### Row Byte to Pad Mapping
 ```
@@ -122,7 +134,7 @@ Offset  Size  Description
 
 When you assign a different sample, set the trim to cover the new sample: trim start 0 and length = the WAV's frame count. Factory pads that have never been trimmed store `ff ff ff ff ff ff ff ff` in bytes 4-11 instead.
 
-Some device-written pad files are 26 bytes (without byte 26).
+Device-written pad files are 26 or 27 bytes; factory pads are 26. One report links 27-byte pads written by other tools to `ERR PATTERN 189` on scene changes, so it is still unresolved. Keep the size the device wrote, and use 26 bytes for new pads.
 
 ### Assigning a Sample
 ```python
@@ -163,11 +175,12 @@ Byte 4: Time signature numerator   (literal, e.g. 4)
 Byte 5: Time signature denominator (literal, e.g. 4)
 ```
 
-Unused records must be `00 00 00 00 04 04`; zeroing the time signature gives `err scene 156`. Scene 1 is the scene the device loads as the current one.
+Unused records must be `00 00 00 00 04 04`; zeroing the time signature gives `err scene 156`. Which scene the device opens on is stored separately, in trailer byte 3 (file offset 604).
 
 ### Trailer (111 bytes, file offset 601)
 ```
-Trailer byte 3   (file 604):      Number of scenes in use
+Trailer byte 3   (file 604):      Current scene: the 1-based scene the device opens on. Often equals the
+                                  number of scenes, because commit advances it, but it is a cursor
 Trailer byte 11  (file 612):      Song length (number of song positions, 0-99)
 Trailer byte 12+ (file 613-711):  Song list, one byte per position: a 1-based scene number
 Other bytes:                      0x00 observed
@@ -175,12 +188,20 @@ Other bytes:                      0x00 observed
 
 Each song position plays its scene once. A position lasts as long as the longest pattern in that scene. So, to repeat a section, repeat its scene number in the song list.
 
-To play the song on the device: hold MAIN and press the ENTER pad to open the song list editor, then press SHIFT + PLAY to play from position 1 (see the official guide, "song mode").
+Other trailer bytes (601-603, 605-611) and header bytes 0-4 are unknown. Writing them as 0 is accepted by the device ([kmorrill/ep-series-sysex](https://github.com/kmorrill/ep-series-sysex)).
+
+### Song mode on the device
+From the official guide (modes, system, what's new):
+- Open the song list editor: hold MAIN and press ENTER. SHIFT + PLAY plays from position 1; PLAY plays from the selected position.
+- In the editor: -/+ moves between positions; SHIFT + A adds the current scene; SHIFT + -/+ changes the scene at this position; SHIFT + C cuts a position; SHIFT + D inserts/pastes.
+- Up to 99 positions; a scene can be up to 99 bars.
+- The song stops at the end by default. Looping is a system setting, not stored in the project: 420 = loop off, 421 = loop on.
+- Starting from external MIDI clock plays the current scene (byte 604) on a loop and ignores the song list.
 
 When a project has no `scenes` member, scene *n* plays pattern *n* in every group.
 
 ### Safety notes
-- Only reference patterns that exist as members in the same project tar (`err pattern 187`). Write empty patterns (`00 01 00 00`) for scene slots you don't use.
+- Every group of every used scene must point at a pattern member that exists in the same project tar. A 0 or a missing member gives `err pattern 187`. To silence a group, point it at an empty pattern (`00 01 00 00`).
 - Prefer patching a `scenes` member from the user's own backup over building one from zeros. The header and trailer still have unknown bytes, and the kmorrill doc reports that a 2.0.5-era `scenes` member does not carry over to 2.5.1.
 - Status: the scene records and song list are verified by decoding device-written files. Playback of a written song list on the device is not yet confirmed.
 
@@ -199,17 +220,21 @@ Offset    Size      Description
 --------  --------  -----------
 0         4         0x00
 4         4         Tempo in BPM (float32LE). Must be non-zero
-8         16        Four float32LE values, 1.0 on the device (meaning unconfirmed)
+8         16        Unknown. Four 1.0 floats in one OS 2.5.1 backup; all zeros in kmorrill's captures
 24        4 x 48    Group A, B, C, D blocks (group g at 24 + 48*g): 12 float32LE
                     fader parameter values each. -1.0 = not set / default
 216       4         Fader assignment for groups A-D (0 LVL, 1 PTC, 2 TIM, 3 LPF, 4 HPF, 5 FX, ...)
-220       2         Unknown (00 01 observed)
+220       2         Unknown (00 01 on OS 2.5.1, 00 02 on 2.0.5)
 222       1         Scale (0 2T, 1 maj, 2 min, 3 dor, 4 phr, 5 lyd, 6 mix, 7 loc,
                     8 ma.p, 9 mi.p, 10 BLU, 11 H.MI, 12 M.MI)
 223       1         Root note (pitch class: 0 C .. 11 B)
 ```
 
-Prefer copying settings from the user's own backup and patching only the fields you need, such as the tempo.
+Fader parameter index (for 24 + 48*g + 4*p, the fader assignment and automation): 0 LVL, 1 PTC, 2 TIM, 3 LPF, 4 HPF, 5 FX send, 6 ATK, 7 REL, 8 PAN, 9 TUNE, 10 VEL, 11 MOD. Master FX is silent for a group whose FX send is -1.0 or 0.
+
+Scale and root note at 222-223 are disputed: some sources put scale/key at the system level, and the member is 222 bytes on some firmware.
+
+Prefer copying settings from the user's own backup and patching only the fields you need, such as the tempo. A settings member with a zero tempo gives `ERR CLOCK 43`, and one report needed a flash format to recover.
 
 ## FX Settings File (`fx_settings`)
 
@@ -218,7 +243,19 @@ Holds the master effect when one is set. Field map from [phones24/ep133-export-t
 - Bytes 12 + 4*(type-1): parameter 1 of each effect, float32LE.
 - Bytes 76 + 4*(type-1): parameter 2, float32LE.
 
-A project with no effect set has no `fx_settings` member.
+Further detail from [kmorrill/ep-series-sysex](https://github.com/kmorrill/ep-series-sysex): the member is 144, 152 or 160 bytes depending on firmware (160 on OS 2.5.1). Bytes 136/140 hold the output compressor drive and speed, 144/148 the sidechain length and shape, and 152-159 one uint16LE per group for sidechain routing (bit 15 = this group is ducked, bits 0-11 = source pad mask).
+
+A project with no effect set has no `fx_settings` member. Projects with no patterns may instead have a 48-byte `live` member: one byte per pad, A p01 to D p12, 1 = loop pad armed at load.
+
+## Device error codes
+| Error | Cause |
+|-------|-------|
+| `err pattern 71` | Pattern header byte 0 not 0 (file system locks until power-cycle) |
+| `err pattern 187` | A used scene points at a missing pattern member, or has 0 for a group |
+| `err pattern 189` | Reported with 27-byte pads written by other tools (unconfirmed) |
+| `err scene 156` | Unused scene record with zeroed time signature |
+| `err fader 93` | Automation value above 32767 |
+| `ERR CLOCK 43` | Tempo in settings is 0 |
 
 ## Timing Reference (Official: 96 PPQN)
 

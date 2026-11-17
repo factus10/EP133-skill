@@ -45,6 +45,7 @@ class EP133Project:
         # scenes: (pattern A, B, C, D, time-sig numerator, denominator); song: 1-based scene numbers
         self.scenes: List[Tuple[int, int, int, int, int, int]] = []
         self.song: List[int] = []
+        self.current_scene = 1   # scenes byte 604: the scene the device opens on
         self._template_pads = None
         self._template_settings = None
         self._template_scenes = None
@@ -166,7 +167,7 @@ class EP133Project:
                   numerator: int = 4, denominator: int = 4) -> int:
         """
         Append a scene: which pattern number each group plays (1-99) plus a time signature.
-        Scene 1 is the one the device shows on load. Returns the new scene's number.
+        Returns the new scene's number. The device opens on project.current_scene (default 1).
         """
         if len(self.scenes) >= 99:
             raise ValueError("Maximum is 99 scenes")
@@ -199,7 +200,9 @@ class EP133Project:
             chunk = self.scenes[i] if i < len(self.scenes) else (0, 0, 0, 0, 4, 4)
             data[7 + 6 * i: 13 + 6 * i] = bytes(chunk)
         t = SCENES_TRAILER
-        data[t + 3] = len(self.scenes)
+        if not 1 <= self.current_scene <= len(self.scenes):
+            raise ValueError(f"current_scene {self.current_scene} is not a defined scene")
+        data[t + 3] = self.current_scene   # a cursor, not a count
         data[t + 11] = len(self.song)
         data[t + 12: t + 111] = bytes(self.song).ljust(99, b'\0')
         return bytes(data)
@@ -385,7 +388,8 @@ class EP133Project:
 
 # Default pad (27 bytes), modelled on factory pads: untrimmed, volume 100, release 255,
 # one-shot, root note 60
-DEFAULT_PAD = bytes([0, 0, 0, 0] + [0xFF] * 8 + [0, 0, 0, 0, 100, 0, 0, 0, 255, 0, 0, 0, 60, 0, 0])
+# 26 bytes like the device's factory pads (27-byte pads are linked to ERR PATTERN 189)
+DEFAULT_PAD = bytes([0, 0, 0, 0] + [0xFF] * 8 + [0, 0, 0, 0, 100, 0, 0, 0, 255, 0, 0, 0, 60, 0])
 
 
 def _default_settings() -> bytes:

@@ -75,7 +75,8 @@ Byte 7:    Flags (0x00)
 
 The optional `scenes` member (712 bytes) holds 99 scenes and the song list:
 - Each scene is 6 bytes at offset `7 + 6*(n-1)`: pattern number for groups A, B, C, D, then the time signature (`04 04`).
-- The song list is at offset 613: one scene number per position. Its length is at offset 612, and the scene count is at offset 604.
+- The song list is at offset 613: one scene number per position. Its length is at offset 612. Offset 604 is the scene the device opens on (a cursor, usually 1).
+- Every group in a used scene must point at an existing pattern member; use empty patterns for silent groups.
 - A song position plays its scene once, so repeat a scene number to repeat a section.
 
 See `references/format-details.md` for the full layout and safety notes.
