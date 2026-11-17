@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import wave
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
@@ -20,16 +21,19 @@ from typing import Dict, List, Tuple, Optional
 class EP133Project:
     """Create EP-133 project files (.ppak)"""
 
-    def __init__(self, device_sku: str = "TE032AS001", project_num: int = 1):
+    def __init__(self, device_sku: str = "TE032AS001", project_num: int = 1,
+                 bpm: Optional[float] = None):
         """
         Initialize a new EP-133 project.
 
         Args:
             device_sku: Device serial number (get from user's backup meta.json)
             project_num: Project slot 1-9
+            bpm: Project tempo. None keeps the template's tempo (or 120 without a template)
         """
         self.device_sku = device_sku
         self.project_num = project_num
+        self.bpm = bpm
         self.pad_assignments: Dict[str, Dict[int, int]] = {
             'a': {}, 'b': {}, 'c': {}, 'd': {}
         }
@@ -230,20 +234,56 @@ class EP133Project:
 
         return data
 
-    def _create_pad_data(self, group: str, pad: int) -> bytes:
-        """Create binary pad data"""
-        # Use template if available
-        if self._template_pads and group in self._template_pads and pad in self._template_pads[group]:
-            data = bytearray(self._template_pads[group][pad])
+    def _create_pad_data(self, group: str, pad: int,
+                         sample_frames: Optional[Dict[int, int]] = None) -> bytes:
+        """Create binary pad data (layout in references/format-details.md)"""
+        template = (self._template_pads or {}).get(group, {}).get(pad)
+        sample_num = self.pad_assignments[group].get(pad)
+        if template is not None:
+            data = bytearray(template)
+            if sample_num is None:
+                return bytes(data)           # untouched pad: keep exactly as the device wrote it
+            if int.from_bytes(data[1:3], 'little') == sample_num:
+                return bytes(data)           # same sample: keep its trim and settings
         else:
-            # Minimal 27-byte pad file
-            data = bytearray(27)
+            data = bytearray(DEFAULT_PAD)
+            sample_num = sample_num or 0
 
-        # Set sample number at bytes 1-2
-        sample_num = self.pad_assignments[group].get(pad, 0)
         data[1:3] = struct.pack('<H', sample_num)
-
+        # New sample: the trim (bytes 4-11) must cover it, or the pad is silent / cut off
+        frames = (sample_frames or {}).get(sample_num)
+        if frames:
+            data[4:12] = (0).to_bytes(4, 'little') + min(frames, 0xFFFFFF).to_bytes(3, 'little') + b'\0'
+        else:
+            data[4:12] = b'\xff' * 8        # the device's own "untrimmed" marker
         return bytes(data)
+
+    def _create_settings_data(self) -> bytes:
+        """Settings from the template (tempo patched) or device-like defaults."""
+        if self._template_settings:
+            data = bytearray(self._template_settings)
+        else:
+            data = bytearray(DEFAULT_SETTINGS)
+        if self.bpm is not None:
+            if not 1 <= self.bpm <= 300:
+                raise ValueError(f"Invalid bpm: {self.bpm}")
+            data[4:8] = struct.pack('<f', self.bpm)
+        return bytes(data)
+
+    @staticmethod
+    def _sample_frames(sounds_dir: Optional[str]) -> Dict[int, int]:
+        """Map sample number -> frame count for 'NNN name.wav' files in sounds_dir."""
+        frames: Dict[int, int] = {}
+        if sounds_dir and os.path.isdir(sounds_dir):
+            for fname in os.listdir(sounds_dir):
+                m = re.match(r'(\d{1,3})\D', fname)
+                if m and fname.lower().endswith('.wav'):
+                    try:
+                        with wave.open(os.path.join(sounds_dir, fname)) as w:
+                            frames[int(m.group(1))] = w.getnframes()
+                    except (wave.Error, EOFError):
+                        pass
+        return frames
 
     def save(self, output_path: str, sounds_dir: Optional[str] = None):
         """
@@ -262,11 +302,12 @@ class EP133Project:
             os.makedirs(os.path.join(work_dir, 'patterns'), exist_ok=True)
 
             # Write pad files
+            sample_frames = self._sample_frames(sounds_dir)
             for group in ['a', 'b', 'c', 'd']:
                 for pad in range(1, 13):
                     pad_path = os.path.join(work_dir, 'pads', group, f'p{pad:02d}')
                     with open(pad_path, 'wb') as f:
-                        f.write(self._create_pad_data(group, pad))
+                        f.write(self._create_pad_data(group, pad, sample_frames))
 
             # Write pattern files
             patterns = dict(self.patterns)
@@ -285,13 +326,8 @@ class EP133Project:
 
             # Write settings
             settings_path = os.path.join(work_dir, 'settings')
-            if self._template_settings:
-                with open(settings_path, 'wb') as f:
-                    f.write(self._template_settings)
-            else:
-                # Minimal settings (222 bytes)
-                with open(settings_path, 'wb') as f:
-                    f.write(bytes(222))
+            with open(settings_path, 'wb') as f:
+                f.write(self._create_settings_data())
 
             # Create tar
             tar_buffer = io.BytesIO()
@@ -346,6 +382,25 @@ class EP133Project:
 
         return output_path
 
+
+# Default pad (27 bytes), modelled on factory pads: untrimmed, volume 100, release 255,
+# one-shot, root note 60
+DEFAULT_PAD = bytes([0, 0, 0, 0] + [0xFF] * 8 + [0, 0, 0, 0, 100, 0, 0, 0, 255, 0, 0, 0, 60, 0, 0])
+
+
+def _default_settings() -> bytes:
+    """224-byte settings as the device writes them: 120 BPM, -1.0 (unset) fader values."""
+    data = bytearray(224)
+    data[4:8] = struct.pack('<f', 120.0)
+    for i in range(4):
+        data[8 + 4 * i: 12 + 4 * i] = struct.pack('<f', 1.0)
+    for i in range(48):
+        data[24 + 4 * i: 28 + 4 * i] = struct.pack('<f', -1.0)
+    data[216:224] = bytes([5, 5, 5, 5, 0, 1, 0, 0])   # fader assign FX x4; scale/root 0
+    return bytes(data)
+
+
+DEFAULT_SETTINGS = _default_settings()
 
 # Scenes member layout (OS 2.5.1): 7-byte header, 99 x 6-byte scenes, 111-byte trailer
 SCENES_SIZE = 712

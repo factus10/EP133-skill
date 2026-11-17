@@ -97,6 +97,12 @@ Sample assignment is at bytes 1-2 (uint16 little-endian):
 data[1:3] = struct.pack('<H', sample_number)
 ```
 
+Bytes 4-6 are the trim start and bytes 8-10 the play length, both in sample frames (uint24 LE). A pad with length 0 is silent, so after assigning a new sample, set start 0 and length = the WAV's frame count. `create_ppak.py` does this when it can find the WAV. Other fields: volume (16, default 100), pitch (17), pan (18), attack/release (19/20), play mode (23), root note (24). See `references/format-details.md`.
+
+### Settings (224 bytes)
+
+The tempo is a float32 LE at bytes 4-7 and must be non-zero. Scale and root note are at bytes 222-223. Copy settings from the user's backup and patch the tempo, or let `create_ppak.py` build defaults (`EP133Project(bpm=...)`).
+
 ### Timing Reference (Official: 96 PPQN)
 
 The EP-133 uses **96 ticks per quarter note (PPQN)** internally (per official Technical Specifications).
@@ -194,3 +200,5 @@ The meta.json requires matching `device_sku` and `base_sku`. Get from user's bac
 | Pattern is only 1 bar long | Header byte 1 left at 0x01 | Set byte 1 to the bar count (`set_pattern_bars`) |
 | `err pattern 187` | Scene refers to a pattern member that isn't in the tar | Write every referenced pattern, even if empty |
 | `err scene 156` | Unused scene records zeroed completely | Unused scenes must be `00 00 00 00 04 04` |
+| Pad shows the sample name but is silent | Pad play length (bytes 8-10) is 0 | Set it to the WAV's frame count |
+| "Error Clock 43" on load | Tempo float in settings is 0 | Write the BPM at settings bytes 4-7 |

@@ -64,6 +64,8 @@ Patterns recorded on the device hold note lengths of 12-26 ticks at bytes 5-6. T
 
 Events are sorted by time.
 
+Some records in device-written patterns have a row byte that is not a multiple of 8. These look like automation records, not notes. Readers should skip them, and writers should not produce them. Byte 7 has also been seen non-zero on device-written notes; its meaning is unknown.
+
 ### Row Byte to Pad Mapping
 ```
 Pad 1  = 0x00 (0)
@@ -90,13 +92,37 @@ Other values may represent chromatic pitch offsets but can cause issues. Stick t
 
 ## Pad File Binary Format (27 bytes)
 
+Field map from [phones24/ep133-export-to-daw](https://github.com/phones24/ep133-export-to-daw/blob/main/docs/EP133_FORMATS.md), checked against a device backup (OS 2.5.1):
+
 ```
 Offset  Size  Description
 ------  ----  -----------
-0       1     Unknown (preserve from template)
+0       1     0x00
 1       2     Sample number (uint16LE, 0 = no sample)
-3       24    Pad parameters (preserve from template)
+3       1     MIDI channel
+4       3     Trim start, in sample frames (uint24LE)
+7       1     0x00
+8       3     Play length from trim start, in sample frames (uint24LE)
+11      1     0x00
+12      4     Time-stretch BPM (float32LE)
+16      1     Volume (0-200, default 100)
+17      1     Pitch, semitones (int8: -12..12)
+18      1     Pan (int8: -16 left .. 0 centre .. 16 right)
+19      1     Attack (0-255; KEY/LEG modes)
+20      1     Release (0-255; default 255)
+21      1     Time stretch: 0 off, 1 BPM, 2 bars, 3 rev
+22      1     Choke group flag
+23      1     Play mode: 0 one-shot, 1 key, 2 legato
+24      1     Root note (MIDI note, default 60)
+25      1     Time-stretch bars: 0 = 1, 1 = 2, 2 = 4, 255 = 1/2, 254 = 1/4
+26      1     Pitch, fine (int8, hundredths of a semitone)
 ```
+
+**Bytes 8-10 are the sample's play length, not a ROM address.** With trim start 0, the value equals the sample's frame count. In a real backup, all 12 pads of a group matched their WAV files exactly (e.g. sample 001 MICRO KICK: 22412 in the pad, 22412 frames in the WAV). A length of 0 plays nothing, which is why pads built from zeros are silent.
+
+When you assign a different sample, set the trim to cover the new sample: trim start 0 and length = the WAV's frame count. Factory pads that have never been trimmed store `ff ff ff ff ff ff ff ff` in bytes 4-11 instead.
+
+Some device-written pad files are 26 bytes (without byte 26).
 
 ### Assigning a Sample
 ```python
@@ -151,6 +177,8 @@ Each song position plays its scene once. A position lasts as long as the longest
 
 To play the song on the device: hold MAIN and press the ENTER pad to open the song list editor, then press SHIFT + PLAY to play from position 1 (see the official guide, "song mode").
 
+When a project has no `scenes` member, scene *n* plays pattern *n* in every group.
+
 ### Safety notes
 - Only reference patterns that exist as members in the same project tar (`err pattern 187`). Write empty patterns (`00 01 00 00`) for scene slots you don't use.
 - Prefer patching a `scenes` member from the user's own backup over building one from zeros. The header and trailer still have unknown bytes, and the kmorrill doc reports that a 2.0.5-era `scenes` member does not carry over to 2.5.1.
@@ -162,9 +190,35 @@ scenes:  1 = A01 intro, 2 = A02 verse, 3 = A03 fill
 song:    1 1 2 2 2 3 2 2      (length byte = 8)
 ```
 
-## Settings File (222 bytes)
+## Settings File (224 bytes)
 
-Binary file containing project settings. Preserve from template/backup - do not modify unless you understand the format.
+The `settings` member is 224 bytes on OS 2.5.1. Older notes give 222. Field map from [phones24/ep133-export-to-daw](https://github.com/phones24/ep133-export-to-daw/blob/main/docs/EP133_FORMATS.md), checked against a device backup:
+
+```
+Offset    Size      Description
+--------  --------  -----------
+0         4         0x00
+4         4         Tempo in BPM (float32LE). Must be non-zero
+8         16        Four float32LE values, 1.0 on the device (meaning unconfirmed)
+24        4 x 48    Group A, B, C, D blocks (group g at 24 + 48*g): 12 float32LE
+                    fader parameter values each. -1.0 = not set / default
+216       4         Fader assignment for groups A-D (0 LVL, 1 PTC, 2 TIM, 3 LPF, 4 HPF, 5 FX, ...)
+220       2         Unknown (00 01 observed)
+222       1         Scale (0 2T, 1 maj, 2 min, 3 dor, 4 phr, 5 lyd, 6 mix, 7 loc,
+                    8 ma.p, 9 mi.p, 10 BLU, 11 H.MI, 12 M.MI)
+223       1         Root note (pitch class: 0 C .. 11 B)
+```
+
+Prefer copying settings from the user's own backup and patching only the fields you need, such as the tempo.
+
+## FX Settings File (`fx_settings`)
+
+Holds the master effect when one is set. Field map from [phones24/ep133-export-to-daw](https://github.com/phones24/ep133-export-to-daw/blob/main/docs/EP133_FORMATS.md):
+- Byte 4: effect type (0 off, 1 delay, 2 reverb, 3 distortion, 4 chorus, 5 filter, 6 compressor).
+- Bytes 12 + 4*(type-1): parameter 1 of each effect, float32LE.
+- Bytes 76 + 4*(type-1): parameter 2, float32LE.
+
+A project with no effect set has no `fx_settings` member.
 
 ## Timing Reference (Official: 96 PPQN)
 
