@@ -257,6 +257,19 @@ A project with no effect set has no `fx_settings` member. Projects with no patte
 | `err fader 93` | Automation value above 32767 |
 | `ERR CLOCK 43` | Tempo in settings is 0 |
 
+## Live MIDI Behaviour (OS 2.5.1)
+
+These are measured facts about the USB MIDI connection, not the file format. Source: Padwork's ["MIDI, measured"](https://getpadwork.app/howto/midi-facts) page, measured on a 128 MB unit running OS 2.5.1.
+
+- **PLAY** sends Song Position Pointer 0 then Continue (`F2 00 00`, `FB`), never Start (`FA`). A DAW or sequencer that only follows Start may not follow the device.
+- **STOP** sends Stop (`FC`) followed by CC 120 (all sound off).
+- **Clock out** is off by default. Turn it on with SHIFT + ERASE, type 102, then ENTER.
+- **Notes** go out on each pad's own MIDI channel (pad file byte 3).
+- **Knobs:** the device sends no CC when you turn its own knobs. CC 12/13 control FX only with system setting 110.
+- **Timing of saves:** a pattern you record is written to the project file within about 1.3 s of pressing STOP. Wait before pulling a backup, or you may miss the take.
+- **Reading a project over SysEx** mutes the pads for under a second.
+- When the device is started from external clock, it loops the current scene (scenes byte 604) and ignores the song list (see Scenes File).
+
 ## Timing Reference (Official: 96 PPQN)
 
 The EP-133 uses **96 ticks per quarter note** as its internal sequencer resolution. This is confirmed in the official Technical Specifications.

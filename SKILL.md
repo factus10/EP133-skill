@@ -186,6 +186,10 @@ for i in range(16):
     project.add_event('a01', i * 24, hihat, vel)
 ```
 
+## Live MIDI Notes
+
+PLAY sends Song Position Pointer 0 + Continue, never Start. Recorded patterns reach the project file about 1.3 s after STOP, so wait before making a backup. Clock out is off until you press SHIFT + ERASE, 102, ENTER. See "Live MIDI Behaviour" in `references/format-details.md`.
+
 ## Device SKU
 
 The meta.json requires matching `device_sku` and `base_sku`. Get from user's backup file or use common value `TE032AS001`.
